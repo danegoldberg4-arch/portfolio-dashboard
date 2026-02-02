@@ -83,10 +83,10 @@ let priceCache = {
   exchangeRates: { data: null, timestamp: 0 } 
 };
 
-// CACHE DURATION: 5 minutes = 300000ms
-// This means API is pinged at most once every 5 minutes
-// With 12 US stocks and ~60s fetch time, this keeps us within limits
-const CACHE_DURATION = 300000; // 5 minutes
+// CACHE DURATION: 30 minutes = 1800000ms
+// This means API is pinged at most once every 30 minutes
+// With 12 US stocks and ~2 min fetch time, this keeps us well within limits
+const CACHE_DURATION = 1800000; // 30 minutes
 
 // Fetch individual stock from Twelve Data (more reliable than batch)
 async function fetchTwelveDataSingle(symbol) {
@@ -251,10 +251,10 @@ app.get('/api/all', async (req, res) => {
       }
     }
     
-    // If there are more stocks, wait 90 seconds before fetching them
+    // If there are more stocks, wait 2 minutes before fetching them
     if (secondBatch.length > 0) {
-      console.log(`[Twelve Data] Waiting 90s before fetching remaining ${secondBatch.length} stocks...`);
-      await new Promise(r => setTimeout(r, 90000)); // Wait 90 seconds
+      console.log(`[Twelve Data] Waiting 120s (2 minutes) before fetching remaining ${secondBatch.length} stocks...`);
+      await new Promise(r => setTimeout(r, 120000)); // Wait 120 seconds (2 minutes)
       
       console.log(`[Twelve Data] Fetching second batch: ${secondBatch.length} stocks`);
       for (const symbol of secondBatch) {
@@ -323,8 +323,9 @@ app.listen(PORT, () => {
   console.log(`Cache Duration: ${CACHE_DURATION / 1000}s (${CACHE_DURATION / 60000} minutes)`);
   console.log('API fetching strategy:');
   console.log('  • First 8 stocks: Immediate fetch');
-  console.log('  • Remaining stocks: After 90 second delay');
-  console.log('  • Cache expires after 5 minutes');
+  console.log('  • Wait 2 minutes');
+  console.log('  • Remaining 4 stocks: Fetch after delay');
+  console.log('  • Hold prices for 30 minutes (cache)');
   console.log('  • Failed fetches: Retain last successful price');
   console.log(`Twelve Data: Fetching ${PORTFOLIO.equities.filter(e => e.market === 'US').length} US stocks only`);
   console.log(`Ignoring: ${PORTFOLIO.equities.filter(e => e.market !== 'US').length} non-US stocks`);
