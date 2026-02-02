@@ -399,7 +399,7 @@ export default function App() {
               <div className="banner-details">
                 • {stats.usEquities} US stocks tracked via Twelve Data
                 • {stats.nonUsEquities} non-US stocks (ASX, HK) require manual pricing
-                • Update frequency: Every 5 minutes • First fetch takes ~60 seconds
+                • Update frequency: Every 5 minutes • First fetch takes ~95 seconds
               </div>
             </div>
           </div>
@@ -549,7 +549,7 @@ export default function App() {
       <footer className="footer">
         <p>
           <strong>Live prices:</strong> Twelve Data (US equities) & CoinGecko (crypto) • 
-          <strong> Update frequency:</strong> Every 5 minutes (first fetch ~60s)
+          <strong> Update frequency:</strong> Every 5 minutes (first fetch ~95s)
         </p>
         {data?.timestamp && <p className="timestamp">Last update: {new Date(data.timestamp).toLocaleString('en-AU')}</p>}
         {data?.cached && <p className="cached-indicator">📦 Serving cached data</p>}

@@ -220,6 +220,9 @@ app.get('/api/all', async (req, res) => {
     // Stocks via Twelve Data - ONLY US STOCKS
     const stockPrices = {};
     
+    // Start with previous cache data (fallback for failed fetches)
+    const previousPrices = priceCache.stocks.data || {};
+    
     // Filter to only US market stocks
     const usStocks = PORTFOLIO.equities.filter(e => e.market === 'US');
     const usSymbols = [...new Set(usStocks.map(e => e.symbol))];
@@ -238,29 +241,42 @@ app.get('/api/all', async (req, res) => {
         const priceData = await fetchTwelveDataSingle(symbol);
         if (priceData) {
           stockPrices[symbol] = priceData;
+        } else if (previousPrices[symbol]) {
+          // Fetch failed, use previous cached price
+          console.log(`  ⟳ ${symbol}: Using cached price from last successful fetch`);
+          stockPrices[symbol] = previousPrices[symbol];
         }
         // Small delay between individual requests to avoid overwhelming API
         await new Promise(r => setTimeout(r, 300)); // 300ms between each
       }
     }
     
-    // If there are more stocks, wait 1 minute before fetching them
+    // If there are more stocks, wait 90 seconds before fetching them
     if (secondBatch.length > 0) {
-      console.log(`[Twelve Data] Waiting 60s before fetching remaining ${secondBatch.length} stocks...`);
-      await new Promise(r => setTimeout(r, 60000)); // Wait 60 seconds
+      console.log(`[Twelve Data] Waiting 90s before fetching remaining ${secondBatch.length} stocks...`);
+      await new Promise(r => setTimeout(r, 90000)); // Wait 90 seconds
       
       console.log(`[Twelve Data] Fetching second batch: ${secondBatch.length} stocks`);
       for (const symbol of secondBatch) {
         const priceData = await fetchTwelveDataSingle(symbol);
         if (priceData) {
           stockPrices[symbol] = priceData;
+        } else if (previousPrices[symbol]) {
+          // Fetch failed, use previous cached price
+          console.log(`  ⟳ ${symbol}: Using cached price from last successful fetch`);
+          stockPrices[symbol] = previousPrices[symbol];
         }
         await new Promise(r => setTimeout(r, 300)); // 300ms between each
       }
     }
     
+    // Count fresh vs cached prices
+    const freshPrices = Object.keys(stockPrices).filter(s => !previousPrices[s] || 
+      JSON.stringify(stockPrices[s]) !== JSON.stringify(previousPrices[s])).length;
+    const cachedPrices = Object.keys(stockPrices).length - freshPrices;
+    
     priceCache.stocks = { data: stockPrices, timestamp: now };
-    console.log(`[Twelve Data] Successfully fetched ${Object.keys(stockPrices).length}/${usSymbols.length} US stocks`);
+    console.log(`[Twelve Data] Successfully fetched ${Object.keys(stockPrices).length}/${usSymbols.length} US stocks (${freshPrices} fresh, ${cachedPrices} from previous cache)`);
     console.log(`[CACHE] Data will be cached for ${CACHE_DURATION / 1000}s (${CACHE_DURATION / 60000} minutes)`);
 
     res.json({ 
@@ -307,8 +323,9 @@ app.listen(PORT, () => {
   console.log(`Cache Duration: ${CACHE_DURATION / 1000}s (${CACHE_DURATION / 60000} minutes)`);
   console.log('API fetching strategy:');
   console.log('  • First 8 stocks: Immediate fetch');
-  console.log('  • Remaining stocks: After 60 second delay');
+  console.log('  • Remaining stocks: After 90 second delay');
   console.log('  • Cache expires after 5 minutes');
+  console.log('  • Failed fetches: Retain last successful price');
   console.log(`Twelve Data: Fetching ${PORTFOLIO.equities.filter(e => e.market === 'US').length} US stocks only`);
   console.log(`Ignoring: ${PORTFOLIO.equities.filter(e => e.market !== 'US').length} non-US stocks`);
   console.log('='.repeat(60));
