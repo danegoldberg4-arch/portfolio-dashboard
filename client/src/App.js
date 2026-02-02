@@ -51,13 +51,22 @@ const HoldingRow = ({ holding, totalValue }) => {
   
   return (
     <div className={`holding-row ${!hasPrice ? 'no-price' : ''}`}>
-      <div className={`holding-icon ${holding.isCrypto ? 'crypto' : ''}`}>
+      <div className={`holding-icon ${holding.isCrypto ? 'crypto' : ''} ${!hasPrice ? 'disabled' : ''}`}>
         {holding.displaySymbol.slice(0, 3)}
       </div>
       <div className="holding-info">
         <div className="holding-symbol">
           {holding.displaySymbol}
-          {!hasPrice && <span className="price-warning" title="Price unavailable">⚠</span>}
+          {!hasPrice && (
+            <span className="price-warning" title={`Price unavailable (${holding.market || 'Unknown'} market not supported)`}>
+              ⚠️
+            </span>
+          )}
+          {holding.market && holding.market !== 'US' && !holding.isCrypto && (
+            <span className="market-badge" title={`${holding.market} stocks not supported by Twelve Data`}>
+              {holding.market}
+            </span>
+          )}
         </div>
         <div className="holding-name">{holding.name}</div>
         <div className="holding-details">
@@ -75,17 +84,27 @@ const HoldingRow = ({ holding, totalValue }) => {
         </div>
       </div>
       <div className="holding-values">
-        <div className="holding-value">{formatCurrency(holding.value)}</div>
+        <div className="holding-value">
+          {hasPrice ? formatCurrency(holding.value) : (
+            <span className="value-unavailable" title="Manual entry required">—</span>
+          )}
+        </div>
         <div className={`holding-change ${isPositive ? 'positive' : 'negative'}`}>
-          {formatPercent(holding.change24h)}
+          {hasPrice ? formatPercent(holding.change24h) : '—'}
         </div>
         <div className={`holding-change-value ${isPositive ? 'positive' : 'negative'}`}>
-          {formatChange(holding.dayChangeValue)}
+          {hasPrice ? formatChange(holding.dayChangeValue) : '—'}
         </div>
       </div>
       <div className="holding-bar-container">
-        <div className="holding-bar" style={{ width: `${Math.min(percentage * 2.5, 100)}%` }}></div>
-        <div className="holding-percent">{percentage.toFixed(1)}%</div>
+        {hasPrice ? (
+          <>
+            <div className="holding-bar" style={{ width: `${Math.min(percentage * 2.5, 100)}%` }}></div>
+            <div className="holding-percent">{percentage.toFixed(1)}%</div>
+          </>
+        ) : (
+          <div className="holding-percent disabled">N/A</div>
+        )}
       </div>
     </div>
   );
@@ -109,9 +128,11 @@ export default function App() {
       }
       const result = await response.json();
       
-      // Log stock prices for debugging
-      console.log('Stock prices received:', Object.keys(result.stockPrices || {}).length);
-      console.log('Sample prices:', Object.entries(result.stockPrices || {}).slice(0, 3));
+      // Log API stats
+      if (result.stats) {
+        console.log('📊 API Stats:', result.stats);
+        console.log(`⏱️  Data ${result.cached ? 'from cache' : 'freshly fetched'}`);
+      }
       
       setData(result);
       setLastUpdate(new Date());
@@ -127,7 +148,8 @@ export default function App() {
 
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 120000); // 2 minutes (matches cache)
+    // Refresh every 2 minutes (120000ms) to match server cache
+    const interval = setInterval(fetchData, 120000);
     return () => clearInterval(interval);
   }, [fetchData]);
 
@@ -141,13 +163,11 @@ export default function App() {
       let priceAUD = priceData?.price || 0;
       let changeValueAUD = priceData?.changeValue || 0;
       
-      // Convert to AUD if needed
-      if (priceData?.currency === 'USD') {
+      // Only US stocks have prices from Twelve Data
+      if (priceData && equity.market === 'US') {
+        // Convert USD to AUD
         priceAUD = priceData.price * (exchangeRates.USDAUD || 1.58);
         changeValueAUD = (priceData.changeValue || 0) * (exchangeRates.USDAUD || 1.58);
-      } else if (priceData?.currency === 'HKD') {
-        priceAUD = priceData.price * (exchangeRates.HKDAUD || 0.20);
-        changeValueAUD = (priceData.changeValue || 0) * (exchangeRates.HKDAUD || 0.20);
       }
       
       const value = priceAUD * equity.shares;
@@ -162,7 +182,7 @@ export default function App() {
         dayChangeValue: dayChangeValue,
         totalShares: equity.shares,
         isCrypto: false,
-        hasPrice: !!priceData
+        hasPrice: !!priceData && priceAUD > 0
       };
     });
 
@@ -185,11 +205,16 @@ export default function App() {
         sector: 'Cryptocurrency',
         region: 'Decentralized',
         type: 'Crypto',
-        hasPrice: !!priceData
+        hasPrice: !!priceData && price > 0
       };
     });
 
-    return [...equityHoldings, ...cryptoHoldings].sort((a, b) => b.value - a.value);
+    return [...equityHoldings, ...cryptoHoldings].sort((a, b) => {
+      // Sort: items with prices first, then by value
+      if (a.hasPrice && !b.hasPrice) return -1;
+      if (!a.hasPrice && b.hasPrice) return 1;
+      return b.value - a.value;
+    });
   }, [data]);
 
   // Consolidate holdings by symbol (combine same stocks from different brokers)
@@ -216,7 +241,12 @@ export default function App() {
       }
     });
     
-    return Object.values(grouped).sort((a, b) => b.value - a.value);
+    return Object.values(grouped).sort((a, b) => {
+      // Sort: items with prices first, then by value
+      if (a.hasPrice && !b.hasPrice) return -1;
+      if (!a.hasPrice && b.hasPrice) return 1;
+      return b.value - a.value;
+    });
   }, [holdings]);
 
   const totals = useMemo(() => {
@@ -225,9 +255,9 @@ export default function App() {
     const cash = data?.portfolio?.cash?.amount || 0;
     const total = equities + crypto + cash;
     
-    // Calculate day change
-    const equityDayChange = holdings.filter(h => !h.isCrypto).reduce((sum, h) => sum + (h.dayChangeValue || 0), 0);
-    const cryptoDayChange = holdings.filter(h => h.isCrypto).reduce((sum, h) => sum + (h.dayChangeValue || 0), 0);
+    // Calculate day change (only for holdings with prices)
+    const equityDayChange = holdings.filter(h => !h.isCrypto && h.hasPrice).reduce((sum, h) => sum + (h.dayChangeValue || 0), 0);
+    const cryptoDayChange = holdings.filter(h => h.isCrypto && h.hasPrice).reduce((sum, h) => sum + (h.dayChangeValue || 0), 0);
     const totalDayChange = equityDayChange + cryptoDayChange;
     
     // Calculate percentage change
@@ -253,7 +283,7 @@ export default function App() {
 
   const regionAllocation = useMemo(() => {
     const regions = {};
-    consolidatedHoldings.forEach(h => {
+    consolidatedHoldings.filter(h => h.hasPrice).forEach(h => {
       const region = h.region || 'Other';
       regions[region] = (regions[region] || 0) + h.value;
     });
@@ -264,7 +294,7 @@ export default function App() {
 
   const sectorAllocation = useMemo(() => {
     const sectors = {};
-    consolidatedHoldings.forEach(h => {
+    consolidatedHoldings.filter(h => h.hasPrice).forEach(h => {
       const sector = h.sector || 'Other';
       sectors[sector] = (sectors[sector] || 0) + h.value;
     });
@@ -294,15 +324,20 @@ export default function App() {
 
   // Calculate stats for display
   const stats = useMemo(() => {
-    const totalHoldings = holdings.length;
+    const totalEquities = holdings.filter(h => !h.isCrypto).length;
     const withPrices = holdings.filter(h => h.hasPrice).length;
-    const missingPrices = totalHoldings - withPrices;
+    const withoutPrices = holdings.filter(h => !h.hasPrice).length;
+    const usEquities = holdings.filter(h => !h.isCrypto && h.market === 'US').length;
+    const nonUsEquities = holdings.filter(h => !h.isCrypto && h.market !== 'US').length;
     
     return {
-      totalHoldings,
+      totalHoldings: holdings.length,
+      totalEquities,
+      usEquities,
+      nonUsEquities,
       withPrices,
-      missingPrices,
-      priceAvailability: totalHoldings > 0 ? (withPrices / totalHoldings * 100) : 0
+      withoutPrices,
+      priceAvailability: holdings.length > 0 ? (withPrices / holdings.length * 100) : 0
     };
   }, [holdings]);
 
@@ -330,7 +365,7 @@ export default function App() {
               'Live'
             )}
             {lastUpdate && ` • ${lastUpdate.toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit' })}`}
-            <button className="refresh-btn" onClick={fetchData} disabled={refreshing} title="Refresh data">
+            <button className="refresh-btn" onClick={fetchData} disabled={refreshing} title="Refresh data (cached for 2 minutes)">
               ↻
             </button>
           </div>
@@ -355,25 +390,42 @@ export default function App() {
         </div>
       )}
 
-      {stats.missingPrices > 0 && (
-        <div className="warning-banner">
-          ⚠️ {stats.missingPrices} holdings missing price data ({stats.priceAvailability.toFixed(0)}% available)
+      {stats.withoutPrices > 0 && (
+        <div className="info-banner">
+          <div className="banner-content">
+            <span className="banner-icon">ℹ️</span>
+            <div className="banner-text">
+              <strong>Price Data Availability:</strong> {stats.withPrices}/{stats.totalHoldings} holdings have live prices
+              <div className="banner-details">
+                • {stats.usEquities} US stocks tracked via Twelve Data
+                • {stats.nonUsEquities} non-US stocks (ASX, HK) require manual pricing
+                • Update frequency: Every 2 minutes (when refreshed)
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
       <div className="total-card">
-        <div className="total-label">Total Value</div>
+        <div className="total-label">Total Value (Tracked Holdings)</div>
         <div className="total-value">{formatCurrency(totals.total)}</div>
-        <div className={`total-change ${totals.totalChange24h >= 0 ? 'positive' : 'negative'}`}>
-          {formatPercent(totals.totalChange24h)} ({formatChange(totals.totalDayChange)}) today
-        </div>
+        {totals.total > 0 && (
+          <div className={`total-change ${totals.totalChange24h >= 0 ? 'positive' : 'negative'}`}>
+            {formatPercent(totals.totalChange24h)} ({formatChange(totals.totalDayChange)}) today
+          </div>
+        )}
+        {stats.withoutPrices > 0 && (
+          <div className="total-note">
+            * Excludes {stats.withoutPrices} holdings without live pricing
+          </div>
+        )}
       </div>
 
       <div className="stats-grid">
         <StatCard 
-          title="Equities" 
+          title="Equities (US Only)" 
           value={formatCompact(totals.equities)} 
-          subtitle={`${(totals.equities/totals.total*100 || 0).toFixed(0)}% of portfolio`}
+          subtitle={totals.total > 0 ? `${(totals.equities/totals.total*100).toFixed(0)}% of tracked` : 'No data'}
           change={totals.equityChange24h}
           changeValue={totals.equityDayChange}
           color="#6366f1" 
@@ -381,7 +433,7 @@ export default function App() {
         <StatCard 
           title="Crypto" 
           value={formatCompact(totals.crypto)} 
-          subtitle={`${(totals.crypto/totals.total*100 || 0).toFixed(0)}% of portfolio`}
+          subtitle={totals.total > 0 ? `${(totals.crypto/totals.total*100).toFixed(0)}% of tracked` : 'No data'}
           change={totals.cryptoChange24h}
           changeValue={totals.cryptoDayChange}
           color="#f59e0b" 
@@ -389,7 +441,7 @@ export default function App() {
       </div>
 
       <div className="chart-section">
-        <h2>Performance</h2>
+        <h2>Performance (Simulated)</h2>
         <div className="chart-container">
           <ResponsiveContainer width="100%" height={200}>
             <AreaChart data={historicalData}>
@@ -433,7 +485,7 @@ export default function App() {
         </div>
 
         <div className="allocation-card">
-          <h3>Regions</h3>
+          <h3>Regions (Tracked)</h3>
           <div className="pie-container">
             <ResponsiveContainer width="100%" height={140}>
               <PieChart>
@@ -456,7 +508,7 @@ export default function App() {
         </div>
 
         <div className="allocation-card">
-          <h3>Sectors</h3>
+          <h3>Sectors (Tracked)</h3>
           <div className="pie-container">
             <ResponsiveContainer width="100%" height={140}>
               <PieChart>
@@ -482,7 +534,10 @@ export default function App() {
       <div className="holdings-section">
         <div className="holdings-header">
           <h2>Holdings</h2>
-          <span className="holdings-count">{consolidatedHoldings.length} positions</span>
+          <span className="holdings-count">
+            {consolidatedHoldings.length} positions 
+            <span className="holdings-stats"> • {stats.withPrices} tracked • {stats.withoutPrices} manual</span>
+          </span>
         </div>
         <div className="holdings-list">
           {consolidatedHoldings.map((holding, i) => (
@@ -492,9 +547,17 @@ export default function App() {
       </div>
 
       <footer className="footer">
-        <p>Live prices via Twelve Data & CoinGecko</p>
-        {data?.timestamp && <p className="timestamp">Updated: {new Date(data.timestamp).toLocaleString('en-AU')}</p>}
-        {data?.cached && <p className="cached-indicator">• Cached data</p>}
+        <p>
+          <strong>Live prices:</strong> Twelve Data (US equities) & CoinGecko (crypto) • 
+          <strong> Update frequency:</strong> Every 2 minutes
+        </p>
+        {data?.timestamp && <p className="timestamp">Last update: {new Date(data.timestamp).toLocaleString('en-AU')}</p>}
+        {data?.cached && <p className="cached-indicator">📦 Serving cached data</p>}
+        {data?.stats && (
+          <p className="api-stats">
+            API Stats: {data.stats.usEquities} US stocks tracked | {data.stats.nonUsEquities} non-US stocks (manual pricing required)
+          </p>
+        )}
       </footer>
 
       <style jsx>{`
@@ -518,12 +581,35 @@ export default function App() {
           cursor: pointer;
         }
         
-        .warning-banner {
-          background: #78350f;
-          color: #fef3c7;
-          padding: 12px 16px;
-          border-radius: 8px;
+        .info-banner {
+          background: linear-gradient(135deg, #1e3a8a 0%, #1e40af 100%);
+          color: #dbeafe;
+          padding: 16px;
+          border-radius: 12px;
           margin-bottom: 16px;
+          border-left: 4px solid #3b82f6;
+        }
+        
+        .banner-content {
+          display: flex;
+          gap: 12px;
+          align-items: flex-start;
+        }
+        
+        .banner-icon {
+          font-size: 24px;
+          flex-shrink: 0;
+        }
+        
+        .banner-text strong {
+          color: #ffffff;
+        }
+        
+        .banner-details {
+          font-size: 13px;
+          margin-top: 8px;
+          opacity: 0.9;
+          line-height: 1.6;
         }
         
         .status-error {
@@ -535,13 +621,34 @@ export default function App() {
         }
         
         .holding-row.no-price {
-          opacity: 0.6;
+          opacity: 0.5;
+          background: rgba(100, 116, 139, 0.05);
+        }
+        
+        .holding-icon.disabled {
+          background: #475569 !important;
+          opacity: 0.5;
         }
         
         .price-warning {
           margin-left: 6px;
-          color: #f59e0b;
           font-size: 14px;
+        }
+        
+        .market-badge {
+          display: inline-block;
+          background: #475569;
+          color: #cbd5e1;
+          font-size: 10px;
+          padding: 2px 6px;
+          border-radius: 4px;
+          margin-left: 6px;
+          font-weight: 600;
+        }
+        
+        .value-unavailable {
+          color: #64748b;
+          font-style: italic;
         }
         
         .holding-broker {
@@ -549,9 +656,33 @@ export default function App() {
           font-size: 11px;
         }
         
+        .holding-percent.disabled {
+          color: #64748b;
+          font-style: italic;
+        }
+        
+        .total-note {
+          font-size: 12px;
+          color: #94a3b8;
+          margin-top: 8px;
+          font-style: italic;
+        }
+        
+        .holdings-stats {
+          font-size: 12px;
+          color: #64748b;
+          font-weight: normal;
+        }
+        
         .cached-indicator {
           color: #64748b;
+          font-size: 12px;
+        }
+        
+        .api-stats {
+          color: #64748b;
           font-size: 11px;
+          margin-top: 4px;
         }
       `}</style>
     </div>
