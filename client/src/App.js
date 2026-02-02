@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { PieChart, Pie, Cell, ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip } from 'recharts';
 
-const API_BASE = '/api';
+const API_BASE = process.env.REACT_APP_API_BASE || '/api';
 
 const formatCurrency = (value, decimals = 2) => {
   if (value === null || value === undefined || isNaN(value)) return '—';
@@ -47,23 +47,30 @@ const StatCard = ({ title, value, subtitle, change, changeValue, color }) => (
 const HoldingRow = ({ holding, totalValue }) => {
   const percentage = totalValue > 0 ? (holding.value / totalValue * 100) : 0;
   const isPositive = (holding.change24h || 0) >= 0;
+  const hasPrice = holding.price > 0;
   
   return (
-    <div className="holding-row">
+    <div className={`holding-row ${!hasPrice ? 'no-price' : ''}`}>
       <div className={`holding-icon ${holding.isCrypto ? 'crypto' : ''}`}>
         {holding.displaySymbol.slice(0, 3)}
       </div>
       <div className="holding-info">
-        <div className="holding-symbol">{holding.displaySymbol}</div>
+        <div className="holding-symbol">
+          {holding.displaySymbol}
+          {!hasPrice && <span className="price-warning" title="Price unavailable">⚠</span>}
+        </div>
         <div className="holding-name">{holding.name}</div>
         <div className="holding-details">
           {holding.totalShares !== undefined && (
             <span className="holding-shares">
               {holding.isCrypto 
                 ? `${holding.totalShares.toFixed(holding.totalShares < 1 ? 6 : 2)} ${holding.displaySymbol}`
-                : `${holding.totalShares.toLocaleString('en-AU', { maximumFractionDigits: 2 })} shares`
+                : `${holding.totalShares.toLocaleString('en-AU', { maximumFractionDigits: 4 })} shares`
               }
             </span>
+          )}
+          {!holding.isCrypto && holding.broker && (
+            <span className="holding-broker"> • {holding.broker}</span>
           )}
         </div>
       </div>
@@ -87,21 +94,31 @@ const HoldingRow = ({ holding, totalValue }) => {
 export default function App() {
   const [data, setData] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [lastUpdate, setLastUpdate] = useState(null);
   const [timeRange, setTimeRange] = useState('1M');
   const [refreshing, setRefreshing] = useState(false);
 
   const fetchData = useCallback(async () => {
     setRefreshing(true);
+    setError(null);
     try {
       const response = await fetch(`${API_BASE}/all`);
-      if (response.ok) {
-        const result = await response.json();
-        setData(result);
-        setLastUpdate(new Date());
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status} ${response.statusText}`);
       }
-    } catch (error) {
-      console.error('Fetch error:', error);
+      const result = await response.json();
+      
+      // Log stock prices for debugging
+      console.log('Stock prices received:', Object.keys(result.stockPrices || {}).length);
+      console.log('Sample prices:', Object.entries(result.stockPrices || {}).slice(0, 3));
+      
+      setData(result);
+      setLastUpdate(new Date());
+      setError(null);
+    } catch (err) {
+      console.error('Fetch error:', err);
+      setError(err.message);
     } finally {
       setIsLoading(false);
       setRefreshing(false);
@@ -110,16 +127,16 @@ export default function App() {
 
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 60000);
+    const interval = setInterval(fetchData, 120000); // 2 minutes (matches cache)
     return () => clearInterval(interval);
   }, [fetchData]);
 
   const holdings = useMemo(() => {
     if (!data) return [];
     
-    const { portfolio, cryptoPrices, stockPrices, exchangeRates } = data;
+    const { portfolio, cryptoPrices = {}, stockPrices = {}, exchangeRates = {} } = data;
     
-    const equityHoldings = portfolio.equities.map(equity => {
+    const equityHoldings = (portfolio.equities || []).map(equity => {
       const priceData = stockPrices[equity.symbol];
       let priceAUD = priceData?.price || 0;
       let changeValueAUD = priceData?.changeValue || 0;
@@ -141,14 +158,15 @@ export default function App() {
         displaySymbol: equity.symbol.replace('.AX', '').replace('.HK', ''),
         price: priceAUD,
         value: value,
-        change24h: priceData?.change24h,
+        change24h: priceData?.change24h || 0,
         dayChangeValue: dayChangeValue,
         totalShares: equity.shares,
-        isCrypto: false
+        isCrypto: false,
+        hasPrice: !!priceData
       };
     });
 
-    const cryptoHoldings = portfolio.crypto.map(crypto => {
+    const cryptoHoldings = (portfolio.crypto || []).map(crypto => {
       const priceData = cryptoPrices[crypto.symbol];
       const price = priceData?.price || 0;
       const value = price * crypto.amount;
@@ -166,7 +184,8 @@ export default function App() {
         isCrypto: true,
         sector: 'Cryptocurrency',
         region: 'Decentralized',
-        type: 'Crypto'
+        type: 'Crypto',
+        hasPrice: !!priceData
       };
     });
 
@@ -179,13 +198,24 @@ export default function App() {
     holdings.forEach(h => {
       const key = h.displaySymbol;
       if (!grouped[key]) {
-        grouped[key] = { ...h, totalShares: h.totalShares || 0 };
+        grouped[key] = { ...h, totalShares: h.totalShares || 0, brokers: [h.broker] };
       } else {
         grouped[key].value += h.value;
         grouped[key].totalShares += h.totalShares || 0;
         grouped[key].dayChangeValue = (grouped[key].dayChangeValue || 0) + (h.dayChangeValue || 0);
+        if (h.broker && !grouped[key].brokers.includes(h.broker)) {
+          grouped[key].brokers.push(h.broker);
+        }
       }
     });
+    
+    // Format broker display
+    Object.values(grouped).forEach(h => {
+      if (h.brokers && h.brokers.length > 1) {
+        h.broker = h.brokers.join(', ');
+      }
+    });
+    
     return Object.values(grouped).sort((a, b) => b.value - a.value);
   }, [holdings]);
 
@@ -262,6 +292,20 @@ export default function App() {
     return data;
   }, [totals.total, timeRange]);
 
+  // Calculate stats for display
+  const stats = useMemo(() => {
+    const totalHoldings = holdings.length;
+    const withPrices = holdings.filter(h => h.hasPrice).length;
+    const missingPrices = totalHoldings - withPrices;
+    
+    return {
+      totalHoldings,
+      withPrices,
+      missingPrices,
+      priceAvailability: totalHoldings > 0 ? (withPrices / totalHoldings * 100) : 0
+    };
+  }, [holdings]);
+
   if (isLoading) {
     return (
       <div className="loading">
@@ -277,9 +321,18 @@ export default function App() {
         <div>
           <h1>Portfolio</h1>
           <div className="status">
-            <span className={`status-dot ${refreshing ? 'refreshing' : ''}`}></span>
-            {refreshing ? 'Updating...' : 'Live'} {lastUpdate && `• ${lastUpdate.toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit' })}`}
-            <button className="refresh-btn" onClick={fetchData} disabled={refreshing}>↻</button>
+            <span className={`status-dot ${refreshing ? 'refreshing' : error ? 'error' : ''}`}></span>
+            {error ? (
+              <span className="status-error" title={error}>Error</span>
+            ) : refreshing ? (
+              'Updating...'
+            ) : (
+              'Live'
+            )}
+            {lastUpdate && ` • ${lastUpdate.toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit' })}`}
+            <button className="refresh-btn" onClick={fetchData} disabled={refreshing} title="Refresh data">
+              ↻
+            </button>
           </div>
         </div>
         <div className="time-selector">
@@ -294,6 +347,19 @@ export default function App() {
           ))}
         </div>
       </header>
+
+      {error && (
+        <div className="error-banner">
+          <span>⚠️ API Error: {error}</span>
+          <button onClick={fetchData}>Retry</button>
+        </div>
+      )}
+
+      {stats.missingPrices > 0 && (
+        <div className="warning-banner">
+          ⚠️ {stats.missingPrices} holdings missing price data ({stats.priceAvailability.toFixed(0)}% available)
+        </div>
+      )}
 
       <div className="total-card">
         <div className="total-label">Total Value</div>
@@ -426,9 +492,68 @@ export default function App() {
       </div>
 
       <footer className="footer">
-        <p>Live prices via CoinGecko & Yahoo Finance</p>
-        {data?.timestamp && <p className="timestamp">Data: {new Date(data.timestamp).toLocaleString('en-AU')}</p>}
+        <p>Live prices via Twelve Data & CoinGecko</p>
+        {data?.timestamp && <p className="timestamp">Updated: {new Date(data.timestamp).toLocaleString('en-AU')}</p>}
+        {data?.cached && <p className="cached-indicator">• Cached data</p>}
       </footer>
+
+      <style jsx>{`
+        .error-banner {
+          background: #7f1d1d;
+          color: #fecaca;
+          padding: 12px 16px;
+          border-radius: 8px;
+          margin-bottom: 16px;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+        }
+        
+        .error-banner button {
+          background: #991b1b;
+          color: white;
+          border: none;
+          padding: 6px 12px;
+          border-radius: 4px;
+          cursor: pointer;
+        }
+        
+        .warning-banner {
+          background: #78350f;
+          color: #fef3c7;
+          padding: 12px 16px;
+          border-radius: 8px;
+          margin-bottom: 16px;
+        }
+        
+        .status-error {
+          color: #ef4444;
+        }
+        
+        .status-dot.error {
+          background: #ef4444;
+        }
+        
+        .holding-row.no-price {
+          opacity: 0.6;
+        }
+        
+        .price-warning {
+          margin-left: 6px;
+          color: #f59e0b;
+          font-size: 14px;
+        }
+        
+        .holding-broker {
+          color: #64748b;
+          font-size: 11px;
+        }
+        
+        .cached-indicator {
+          color: #64748b;
+          font-size: 11px;
+        }
+      `}</style>
     </div>
   );
 }
