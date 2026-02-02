@@ -148,8 +148,8 @@ export default function App() {
 
   useEffect(() => {
     fetchData();
-    // Refresh every 2 minutes (120000ms) to match server cache
-    const interval = setInterval(fetchData, 120000);
+    // Refresh every 5 minutes (300000ms) to match server cache
+    const interval = setInterval(fetchData, 300000);
     return () => clearInterval(interval);
   }, [fetchData]);
 
@@ -365,7 +365,7 @@ export default function App() {
               'Live'
             )}
             {lastUpdate && ` • ${lastUpdate.toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit' })}`}
-            <button className="refresh-btn" onClick={fetchData} disabled={refreshing} title="Refresh data (cached for 2 minutes)">
+            <button className="refresh-btn" onClick={fetchData} disabled={refreshing} title="Refresh data (cached for 5 minutes)">
               ↻
             </button>
           </div>
@@ -399,7 +399,7 @@ export default function App() {
               <div className="banner-details">
                 • {stats.usEquities} US stocks tracked via Twelve Data
                 • {stats.nonUsEquities} non-US stocks (ASX, HK) require manual pricing
-                • Update frequency: Every 2 minutes (when refreshed)
+                • Update frequency: Every 5 minutes • First fetch takes ~60 seconds
               </div>
             </div>
           </div>
@@ -549,7 +549,7 @@ export default function App() {
       <footer className="footer">
         <p>
           <strong>Live prices:</strong> Twelve Data (US equities) & CoinGecko (crypto) • 
-          <strong> Update frequency:</strong> Every 2 minutes
+          <strong> Update frequency:</strong> Every 5 minutes (first fetch ~60s)
         </p>
         {data?.timestamp && <p className="timestamp">Last update: {new Date(data.timestamp).toLocaleString('en-AU')}</p>}
         {data?.cached && <p className="cached-indicator">📦 Serving cached data</p>}

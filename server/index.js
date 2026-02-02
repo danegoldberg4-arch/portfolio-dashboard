@@ -83,67 +83,43 @@ let priceCache = {
   exchangeRates: { data: null, timestamp: 0 } 
 };
 
-// CACHE DURATION: 2 minutes = 120000ms
-// This means API is pinged at most once every 2 minutes
-const CACHE_DURATION = 120000; // 2 minutes
+// CACHE DURATION: 5 minutes = 300000ms
+// This means API is pinged at most once every 5 minutes
+// With 12 US stocks and ~60s fetch time, this keeps us within limits
+const CACHE_DURATION = 300000; // 5 minutes
 
-// Batch fetch multiple stocks from Twelve Data
-async function fetchTwelveDataBatch(symbols) {
+// Fetch individual stock from Twelve Data (more reliable than batch)
+async function fetchTwelveDataSingle(symbol) {
   try {
-    const symbolsStr = symbols.join(',');
-    const url = `https://api.twelvedata.com/quote?symbol=${encodeURIComponent(symbolsStr)}&apikey=${TWELVE_DATA_API_KEY}`;
-    
-    console.log(`[Twelve Data] Fetching ${symbols.length} symbols: ${symbolsStr}`);
+    const url = `https://api.twelvedata.com/quote?symbol=${encodeURIComponent(symbol)}&apikey=${TWELVE_DATA_API_KEY}`;
     const response = await fetch(url);
     
     if (!response.ok) {
-      console.error(`[Twelve Data] HTTP ${response.status}: ${response.statusText}`);
-      return {};
+      console.error(`[Twelve Data] HTTP ${response.status} for ${symbol}`);
+      return null;
     }
     
     const data = await response.json();
-    const results = {};
     
-    // Handle single vs multiple results
-    if (symbols.length === 1) {
-      if (data.close) {
-        const currentPrice = parseFloat(data.close);
-        const previousClose = parseFloat(data.previous_close);
-        results[symbols[0]] = {
-          price: currentPrice,
-          previousClose: previousClose,
-          change24h: parseFloat(data.percent_change) || 0,
-          changeValue: parseFloat(data.change) || 0,
-          currency: 'USD'
-        };
-        console.log(`  ✓ ${symbols[0]}: $${currentPrice.toFixed(2)} (${data.percent_change}%)`);
-      } else {
-        console.log(`  ✗ ${symbols[0]}: No data returned`);
-      }
+    if (data.close) {
+      const currentPrice = parseFloat(data.close);
+      const previousClose = parseFloat(data.previous_close);
+      const result = {
+        price: currentPrice,
+        previousClose: previousClose,
+        change24h: parseFloat(data.percent_change) || 0,
+        changeValue: parseFloat(data.change) || 0,
+        currency: 'USD'
+      };
+      console.log(`  ✓ ${symbol}: $${currentPrice.toFixed(2)} (${data.percent_change}%)`);
+      return result;
     } else {
-      for (const symbol of symbols) {
-        const stockData = data[symbol];
-        if (stockData && stockData.close) {
-          const currentPrice = parseFloat(stockData.close);
-          const previousClose = parseFloat(stockData.previous_close);
-          results[symbol] = {
-            price: currentPrice,
-            previousClose: previousClose,
-            change24h: parseFloat(stockData.percent_change) || 0,
-            changeValue: parseFloat(stockData.change) || 0,
-            currency: 'USD'
-          };
-          console.log(`  ✓ ${symbol}: $${currentPrice.toFixed(2)} (${stockData.percent_change}%)`);
-        } else {
-          console.log(`  ✗ ${symbol}: No data returned`);
-        }
-      }
+      console.log(`  ✗ ${symbol}: No data returned`);
+      return null;
     }
-    
-    return results;
   } catch (error) {
-    console.error('[Twelve Data] Error:', error.message);
-    return {};
+    console.error(`[Twelve Data] Error fetching ${symbol}:`, error.message);
+    return null;
   }
 }
 
@@ -250,21 +226,36 @@ app.get('/api/all', async (req, res) => {
     
     console.log(`[Twelve Data] Fetching ${usSymbols.length} US stocks (ignoring ${PORTFOLIO.equities.length - usStocks.length} non-US stocks)`);
     
-    // Batch into groups of 8 (Twelve Data free tier limit)
-    const batchSize = 8;
-    for (let i = 0; i < usSymbols.length; i += batchSize) {
-      const batch = usSymbols.slice(i, i + batchSize);
-      const batchResults = await fetchTwelveDataBatch(batch);
-      
-      // Store results for all matching equities
-      for (const [symbol, priceData] of Object.entries(batchResults)) {
-        stockPrices[symbol] = priceData;
+    // Twelve Data free tier: 8 API calls per minute
+    // Strategy: Fetch 8 stocks, wait 1 minute, fetch remaining stocks
+    const firstBatch = usSymbols.slice(0, 8);
+    const secondBatch = usSymbols.slice(8);
+    
+    // Fetch first batch (up to 8 stocks)
+    if (firstBatch.length > 0) {
+      console.log(`[Twelve Data] Fetching first batch: ${firstBatch.length} stocks`);
+      for (const symbol of firstBatch) {
+        const priceData = await fetchTwelveDataSingle(symbol);
+        if (priceData) {
+          stockPrices[symbol] = priceData;
+        }
+        // Small delay between individual requests to avoid overwhelming API
+        await new Promise(r => setTimeout(r, 300)); // 300ms between each
       }
+    }
+    
+    // If there are more stocks, wait 1 minute before fetching them
+    if (secondBatch.length > 0) {
+      console.log(`[Twelve Data] Waiting 60s before fetching remaining ${secondBatch.length} stocks...`);
+      await new Promise(r => setTimeout(r, 60000)); // Wait 60 seconds
       
-      // Rate limiting: wait 1 second between batches
-      if (i + batchSize < usSymbols.length) {
-        console.log('[Twelve Data] Waiting 1s before next batch...');
-        await new Promise(r => setTimeout(r, 1000));
+      console.log(`[Twelve Data] Fetching second batch: ${secondBatch.length} stocks`);
+      for (const symbol of secondBatch) {
+        const priceData = await fetchTwelveDataSingle(symbol);
+        if (priceData) {
+          stockPrices[symbol] = priceData;
+        }
+        await new Promise(r => setTimeout(r, 300)); // 300ms between each
       }
     }
     
@@ -314,7 +305,10 @@ app.listen(PORT, () => {
   console.log(`Portfolio API Server running on port ${PORT}`);
   console.log('='.repeat(60));
   console.log(`Cache Duration: ${CACHE_DURATION / 1000}s (${CACHE_DURATION / 60000} minutes)`);
-  console.log('API is pinged at most once every 2 minutes');
+  console.log('API fetching strategy:');
+  console.log('  • First 8 stocks: Immediate fetch');
+  console.log('  • Remaining stocks: After 60 second delay');
+  console.log('  • Cache expires after 5 minutes');
   console.log(`Twelve Data: Fetching ${PORTFOLIO.equities.filter(e => e.market === 'US').length} US stocks only`);
   console.log(`Ignoring: ${PORTFOLIO.equities.filter(e => e.market !== 'US').length} non-US stocks`);
   console.log('='.repeat(60));
